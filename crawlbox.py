@@ -27,12 +27,17 @@ import inspect
 import argparse
 import requests
 import time
+import uuid
+import threading
+import random
+import shutil
+import datetime
 from fake_useragent import UserAgent
 from requests_ntlm import HttpNtlmAuth
 from requests.auth import HTTPBasicAuth
 from requests.auth import HTTPDigestAuth
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
-
+from itertools import permutations
 
 from libs.colorama import Fore, Back, Style
 from libs import FileUtils
@@ -52,6 +57,13 @@ __description__ = '''\
   Github: https://github.com/abaykan
   ___________________________________________
 '''
+
+realpath = os.path.dirname(os.path.realpath(__file__))
+reports_dir = realpath + "/reports"
+print(reports_dir)
+if os.path.exists(reports_dir):
+    shutil.rmtree(reports_dir)
+os.makedirs(reports_dir)
 
 # Returns abbreviated commit hash number as retrieved with "git rev-parse --short HEAD"
 def getRevisionNumber():
@@ -95,7 +107,7 @@ def getRevisionNumber():
 
 # unicode representation of the supplied value
 def getUnicode(value, encoding=None, noneToNull=False):
-    
+
     if noneToNull and value is None:
         return NULL
 
@@ -119,7 +131,7 @@ def getUnicode(value, encoding=None, noneToNull=False):
 # get directory path CrawlBox
 def modulePath():
     weAreFrozen = hasattr(sys, "frozen")
-    
+
     try:
         _ = sys.executable if weAreFrozen else __file__
     except NameError:
@@ -226,12 +238,12 @@ def read(url):
     message += '\nTarget: {0}\n'.format(Fore.CYAN + url + Fore.YELLOW)
     message += Style.RESET_ALL
     write(message)
-    
+
     return url
 
 
 # crawl directory
-def crowl(dirs, url, args):
+def crowl(dirs, url, args, start):
 
     # args strings
     domain = args.url
@@ -249,48 +261,49 @@ def crowl(dirs, url, args):
     extracted = tldextract.extract(url)
     domain = "{}.{}".format(extracted.domain, extracted.suffix)
 
-    if not os.path.exists("reports"):
-        os.makedirs("reports")
-    logfile = open("reports/" + domain + "_logs.txt", "w+")
+    logfile = open(reports_dir + "/" + domain + "_logs_" + str(uuid.uuid4()) + ".txt", "w+")
 
     # init user agent
     if random_agent == True:
         ua = UserAgent()
-     
-    # init default user agent    
+
+    # init default user agent
     headers = { 'User-Agent':  'CrawlBox' }
-    
-    # init default proxy 
+
+    # init default proxy
     proxies = {"http": proxy,"https": proxy}
-    
-    for dir in dirs:
 
-        dir = dir.replace("\n", "")
-        dir = "%s" % (dir)
+    #lines = [line.rstrip('\n') for line in dirs]
 
+    lines = []
+    for line in dirs:
+        lines.append('/'.join(line))
+
+    progress = 0
+    for dir in lines:
         res = ""
         save = 0
         f_url  = url + "/" + dir
-        
+
         # add cookie header
-        
+
         if random_agent == True:
             headers = { 'User-Agent':  ua.random }
-                        
-        
+
+
         # make request with different type of authentication
         if auth_type == "basic":
             try:
                 ress = requests.get(f_url, headers=headers ,auth=HTTPBasicAuth(auth_cred[0], auth_cred[1]),allow_redirects=False, proxies=proxies, verify=False)
             except requests.exceptions.ProxyError:
                 exit(write("Check your proxy please! "))
-                
+
         elif auth_type == "digest":
             try:
                 ress = requests.get(f_url, headers=headers ,auth=HTTPDigestAuth(auth_cred[0], auth_cred[1]),allow_redirects=False, proxies=proxies, verify=False)
             except requests.exceptions.ProxyError:
                 exit(write("Check your proxy please! "))
-                
+
         elif auth_type == "ntlm":
             try:
                 ress = requests.get(f_url, headers=headers ,auth=HttpNtlmAuth(auth_cred[0], auth_cred[1]),allow_redirects=False, proxies=proxies, verify=False)
@@ -302,7 +315,7 @@ def crowl(dirs, url, args):
                 ress = requests.get(f_url, headers=headers ,allow_redirects=False, proxies=proxies, verify=False)
             except requests.exceptions.ProxyError:
                 exit(write("Check your proxy please! "))
-                
+
         response = ress.status_code
 
         # size
@@ -310,8 +323,8 @@ def crowl(dirs, url, args):
             if (ress.headers['content-length'] is not None):
                 size = int(ress.headers['content-length'])
             else:
-                size = 0 
-                
+                size = 0
+
         except (KeyError, ValueError, TypeError):
             size = len(ress.content)
         finally:
@@ -326,18 +339,29 @@ def crowl(dirs, url, args):
         elif (response == 401):
             res = "[-] %s - %s : HTTP %s : Unauthorized" % (f_url, f_size, response)
             res = message = Fore.YELLOW + res + Style.RESET_ALL
+            save = 1
+            count += 1
         elif (response == 403):
             res = "[-] %s - %s : HTTP %s : Needs authorization" % (f_url, f_size, response)
             res = Fore.BLUE + res + Style.RESET_ALL
+            save = 1
+            count += 1
         elif (response == 404):
             res = "[-] %s - %s : HTTP %s : Not Found" % (f_url, f_size, response)
         elif (response == 405):
             res = "[-] %s - %s : HTTP %s : Method Not Allowed" % (f_url, f_size, response)
+            res = Fore.GREEN + res + Style.RESET_ALL
+            save = 1
+            count += 1
         elif (response == 406):
             res = "[-] %s - %s : HTTP %s : Not Acceptable" % (f_url, f_size, response)
         else :
             res = "[-] %s - %s : HTTP %s : Unknown response" % (f_url, f_size, response)
 
+
+        progress += 1
+        res = str(datetime.datetime.now() - start) + '\t' + res
+        res = str(progress) + ' / ' + str(len(lines)) + '\t' + res
 
         # print result
         if response != "":
@@ -380,17 +404,23 @@ def main():
 
         parser.add_argument('-d', help='add delay between requests',
                             nargs=1, dest='delay', type=float, default=0)
-                            
-        parser.add_argument('--random-agent', dest="randomAgent", 
+
+        parser.add_argument('-p', help='permutations of wordlist length',
+                            nargs=1, dest='permutations', type=int, default=1)
+
+        parser.add_argument('-t', help='number of threads to be opened',
+                            nargs=1, dest='threads', type=int, default=1)
+
+        parser.add_argument('--random-agent', dest="randomAgent",
                              help='Use randomly selected HTTP User-Agent header value',
                              action='store_true')
-                             
-        parser.add_argument("--auth-type", dest="authType", 
+
+        parser.add_argument("--auth-type", dest="authType",
                             nargs='?', type=str, help="HTTP authentication type ""(Basic, Digest or NTLM)", required=False)
-                            
+
         parser.add_argument("--auth-cred", dest="authCred",
                             nargs=1, type=str, help="HTTP authentication credentials ""(name:password)", required=False)
-                            
+
         parser.add_argument("--proxy", dest="proxy",
                             nargs=1, type=str, help="Use a proxy to connect to the target URL", required=False)
 
@@ -404,14 +434,20 @@ def main():
         if any([getattr(args,x) for x in required_together]):
             if not all([getattr(args,x) for x in required_together]):
                 exit(write("Cannot supply --auth-type without --auth-cred"))
-                
+
 
         # args strings
         domain = args.url
         wlist = args.wordlist
-        
+
         if wlist:
             wlist = wlist[0]
+
+        if isinstance(args.permutations, list):
+            args.permutations = args.permutations[0]
+
+        if isinstance(args.threads, list):
+            args.threads = args.threads[0]
 
         # print banner
         header()
@@ -419,20 +455,34 @@ def main():
         # check args
         if domain:
             if wlist:
-                list = open(wlist, "r")
+                wlist = open(wlist, "r")
             else:
-                list = open("list.txt", "r")
+                wlist = open("list.txt", "r")
         else:
             exit(write('Error arguments: use crawlbox.py -h to help'))
 
         # read
         url = read(domain)
-        
-        # After check ,start scan
-        crowl(list, url, args)
-    
+
+        start = datetime.datetime.now()
+
+        threads = []
+        lines = [line.rstrip('\n') for line in wlist]
+        random.shuffle(lines)
+        lines = list(permutations(lines, args.permutations))
+        lines_split = list(split(lines, args.threads))
+        for j in range(args.threads):
+            t = threading.Thread(target=crowl, args=(lines_split[j], url, args, start))
+            t.daemon = True
+            t.start()
+            threads.append(t)
+
+        for t in threads:
+            t.join()
+
+
         # close
-        list.close()
+        wlist.close()
 
     except KeyboardInterrupt:
 
@@ -443,6 +493,13 @@ def main():
 
         print('[!] Ctrl + D detected\n[!] Exiting')
         sys.exit(0)
+
+
+# Function to split a list into N parts of approximately equal length
+def split(a, n):
+    k, m = divmod(len(a), n)
+    return (a[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n))
+
 
 
 if __name__ == '__main__':
